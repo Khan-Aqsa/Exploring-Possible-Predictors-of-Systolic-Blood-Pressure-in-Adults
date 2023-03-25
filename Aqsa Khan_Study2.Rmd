@@ -1,0 +1,516 @@
+---
+title: "Exploring Possible Predictors of Systolic Blood Pressure in Adults"
+author: "Aqsa Khan"
+date: "`r Sys.Date()`"
+linkcolor: blue
+output:
+  rmdformats::readthedown:
+    highlight: kate
+    number_sections: true
+    code_folding: show
+    code_download: true
+---
+
+
+# Setup and Data Ingest
+
+## Initial Setup and Package Loads in R 
+
+```{r, message = FALSE, warning = FALSE}
+source("Love-boost.R")
+library(nhanesA)
+library(knitr)
+library(rmdformats)
+library(rmarkdown)
+library(Hmisc)
+library(GGally)
+library(patchwork)
+library(car)
+library(gt)
+library(gtExtras)
+library(kableExtra)
+library(ggrepel)
+library(ggdist)
+library(glue)
+library(equatiomatic)
+library(janitor)
+library(mosaic)
+library(naniar)
+library(broom)
+library(tidyverse) 
+library(patchwork)
+
+## Global options
+
+opts_chunk$set(comment=NA)
+opts_knit$set(width=75)
+
+theme_set(theme_bw())
+options(dplyr.summarise.inform = FALSE)
+```
+
+## Loading the Raw Data into R 
+
+```{R, messgae=FALSE, warning= FALSE}
+demo_raw <- nhanes('P_DEMO') %>% tibble()%>% clean_names()
+bp_raw <- nhanes("P_BPXO")%>% tibble()%>% clean_names()
+fat_raw <- nhanes("P_DR1TOT")%>% tibble()%>% clean_names()
+ghb_raw <- nhanes("P_GHB")%>% tibble()%>% clean_names()
+smoke_raw <- nhanes("P_SMQ")%>% tibble()%>% clean_names()
+weight_raw <- nhanes("P_WHQ")%>% tibble()%>% clean_names()
+```
+
+```{R}
+
+demo <- demo_raw %>% select(seqn, ridstatr, ridageyr, ridreth3) %>%
+  filter(ridstatr==2) %>% 
+  filter(ridageyr %in% (18:70))
+
+bp <- bp_raw |> select(seqn, bpxosy1) 
+
+fats <- fat_raw |> select(seqn, dr1tsfat) 
+
+ghb <- ghb_raw |> select(seqn, lbxgh) 
+
+smoke <- smoke_raw |> select(seqn, smq040) 
+
+weight <- weight_raw |> select(seqn, whq030) 
+
+
+```
+
+
+
+```{r}
+temp_1 <- left_join(demo, bp, by="seqn")
+temp_2 <- left_join(temp_1, fats, by="seqn")
+temp_3 <- left_join(temp_2, ghb, by="seqn")
+temp_4 <- left_join(temp_3, weight, by="seqn")
+temp_5 <- left_join(temp_4, smoke, by="seqn")
+
+dim(temp_5)
+clean_names(temp_5)
+```
+
+```{R}
+glimpse(temp_5) 
+dim(temp_5)
+clean_names(temp_5)
+```
+
+## List of missing values
+
+```{r}
+
+miss_var_summary(temp_5)
+
+```
+
+I have assumed that my data is missing completely at random (MCAR). For further analysis, I'll be using only complete cases. 
+
+
+```{r}
+
+temp_6 <- temp_5[!(temp_5$whq030==7 | temp_5$whq030==9),]
+
+```
+
+```{r}
+
+temp_7 <- temp_6 |> select(seqn, ridstatr, ridageyr, ridreth3, bpxosy1, dr1tsfat, smq040, whq030, lbxgh) |> drop_na()
+
+```
+
+
+### Recoding, relevling and renaming the variables. 
+
+```{r}
+
+temp_7 <- temp_7 %>% mutate(smoking = fct_recode(factor(smq040), 
+"Every day" = "1", 
+"Some days" = "2", 
+"Not at all" = "3"))
+
+temp_7 %>% tabyl(smoking) |> filter(complete.cases(smoking))
+
+
+temp_7 <- temp_7 |> mutate(weight_history = fct_recode(factor(whq030),
+"Overweight" = "3", "Underweight" = "2", "Ideal weight" = "1"))
+
+temp_7 |> tabyl(weight_history)
+
+
+temp_7 <- temp_7 %>% mutate(ethnicity = fct_recode(factor(ridreth3), 
+"Mexican American" = "1", 
+"Hispanic" = "2", 
+"White" = "3",
+"Black" = "4", 
+"Asian" = "6", 
+"Other Race" = "7"),
+ethnicity = fct_relevel(ethnicity, "White"))
+
+temp_7 %>% tabyl(ethnicity)
+
+
+temp_7 <- temp_7 |> rename("systolic_BP"= "bpxosy1", "sat_FA"="dr1tsfat", "glycohemoglobin" = "lbxgh")
+
+```
+
+
+```{r}
+
+glimpse(temp_7)
+
+```
+
+I have combined all the required variables and created a new tibble called study2. 
+
+```{r}
+
+study2 <- temp_7 |> select(seqn, ridstatr, ridageyr, systolic_BP, ethnicity, sat_FA, glycohemoglobin, smoking, weight_history) |> glimpse()
+
+```
+
+## Data Summary
+
+Here's a summary of the `study2` tibble.
+
+```{r}
+
+Hmisc::describe(study2)
+
+```
+
+# Codebook and Data Description
+
+## Codebook
+
+The variables in our data set `study2` for this demonstration are as follows. The Type column indicates the number of levels in each categorical (factor) variable. I'm using Quant to indicate quantitative variables, and Cat-x indicates a categorical variable (factor) with x levels.
+
+Variable      | Type  | Description / Levels
+---------     | :---: | --------------------------------------------
+`seqn`        | ID    | subject code (109266-124821)
+`ridstatr`    | Numeric| Only one Numeric value (2)      
+`ridageyr`    | Quant | Age (18-79 years)
+`systOlic_BP` | Quant | Systolic- 1st Oscillometric reading
+`ethnicity`   | Cat-6 | Mexican American, Hispanic, White, Black, Asian, Other races
+`sat_FA`      | Quant | Total saturated fatty acids (in gm)
+`glycohemoglobin`| Quant | Glycohemoglobin (%)
+`smoking`     | Cat-3 |Do you know smoke cigarettes? (Some days, every day, none at all)
+`weight_history`    | Cat-3 | How do you consider you weight? (Overweight, Underweight, Ideal Weight)
+
+# Analysis
+
+## My Research Question
+
+How effectively we can predict glycohemoglobin using systolic blood pressure, and does the prediction quality improve when we adjust for other four predictors (ethnicity, saturated fatty acids consumption, smoking and weight)? 
+
+
+## Partitioning the data
+
+I have partitioned study2 data into train (70%) and test sample (30%).
+
+```{r}
+
+set.seed(4312022) 
+
+study_b_train <- study2 %>% 
+    slice_sample(., prop = 0.70)
+
+study_b_test <- 
+    anti_join(study2, study_b_train, by = "seqn")
+
+c(nrow(study2), nrow(study_b_train), nrow(study_b_test))
+```
+
+# Transforming the outcome
+
+## Visualizing the Outcome Distribution
+
+Checking whether a normal model fits my outcome. 
+```{r}
+p1 <- ggplot(study2, aes(x = systolic_BP)) +
+  geom_histogram(binwidth = 0.5, 
+                 fill = "slateblue", col = "slateblue") + 
+labs(x= "Systolic blood pressure (mm Hg)")
+
+p2 <- ggplot(study2, aes(sample = systolic_BP)) + 
+  geom_qq(col = "slateblue") + geom_qq_line(col = "red")
+
+p3 <- ggplot(study2, aes(x = "", y = systolic_BP)) +
+  geom_violin(fill = "slateblue", alpha = 0.3) + 
+  geom_boxplot(fill = "slateblue", width = 0.3,
+               outlier.color = "red") +
+  labs(x = "", y = "Systolic blood pressure (mm Hg)") + coord_flip()
+
+p1 + p2 - p3 +
+  plot_layout(ncol = 1, height = c(3, 2)) + 
+  plot_annotation(title = "Systolic Blood Pressure (mm Hg)",
+         subtitle = glue("In 2447 adults"))
+
+
+```
+
+Our data in the histogram doesn't look normally distributed (looks right skewed). The qq plot and the violin box plot also suggest right skew with few outliers.
+
+
+## Numerical Summary 
+
+```{r}
+favstats(~ systolic_BP, data = study_b_train)
+```
+
+## Numerical Summaries of the Predictors
+
+```{r}
+
+study_b_train |> select(-seqn, -ethnicity) |> 
+  mosaic::inspect()
+
+```
+
+## Scatterplot matrix 
+
+Using scatterplot matrix to look for potential ccollinearity issues among my variables and predictors. 
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+scatter_plot <- study_b_train |> 
+  select(systolic_BP, glycohemoglobin, weight_history, ethnicity, sat_FA, smoking)
+
+ggpairs(scatter_plot, title = "Scatterplot Matrix",
+        lower = list(combo = wrap("facethist", bins = 20)))
+
+temp <- lm(systolic_BP ~ glycohemoglobin + weight_history + ethnicity + sat_FA + smoking, data = study_b_train)
+
+car::vif(temp)
+         
+```
+
+- There is a strong correlation between glycohemoglobin and systolic blood pressure. 
+- Glycohemoglobin and saturated fatty acid are negatively correlated, rest the other variables don't show any possible correlation issues. 
+- The VIF values for our variables are quite small which is great for our model.
+
+## `boxCox` function to assess need for transformation of our outcome
+
+```{r}
+
+model_temp <- lm(systolic_BP ~ glycohemoglobin + weight_history + ethnicity + sat_FA + smoking, data = study_b_train)
+
+boxCox(model_temp)
+
+powerTransform(model_temp)
+```
+The boxCox plot suggests using inverse as the transformation for my outcome.
+
+Now, I have plotted my transformed outcome (1/systolic_BP), to assess whether my data looks normal after transformation or not. 
+
+```{r}
+p1 <- ggplot(study_b_train, aes(x = 1/systolic_BP)) +
+  geom_histogram(bins = 20, fill = "slateblue", col = "slateblue") + 
+labs(x= "Systolic blood pressure (mm Hg)")
+
+p2 <- ggplot(study_b_train, aes(sample = 1/systolic_BP)) + 
+  geom_qq(col = "slateblue") + geom_qq_line(col = "red")
+
+p3 <- ggplot(study_b_train, aes(x = "", y = 1/systolic_BP)) +
+  geom_violin(fill = "slateblue", alpha = 0.3) + 
+  geom_boxplot(fill = "slateblue", width = 0.3,
+               outlier.color = "red") +
+  labs(x = "", y = "Systolic blood pressure (mm Hg)") + coord_flip()
+
+p1 + p2 - p3 +
+  plot_layout(ncol = 1, height = c(3, 2)) + 
+  plot_annotation(title = "Systolic Blood Pressure (mm Hg)",
+         subtitle = glue("In 1712 adults"))
+
+```
+
+Using inverse transformation for my outcome, systolic blood pressure, changes it distribution to normal, more symmetric, with less outliers. 
+
+
+Using a linear model to assess how my outcomes transformation changes its relationship with my key predictor glycohemoglobin (Hb1Ac). 
+
+```{r}
+p7 <- ggplot(data = study_b_train, aes(x = glycohemoglobin, y = systolic_BP)) +
+geom_point() +
+geom_smooth(method = "lm", formula = y ~ x) +
+labs(x = "Glycohemoglobin",
+y = "SBP",
+title = "Relationship btw Hb1Ac &  SBP")
+
+p8 <- ggplot(data = study_b_train, aes(x = glycohemoglobin, y = 1/systolic_BP)) +
+geom_point() +
+geom_smooth(method = "lm", formula = y ~ x) +
+labs(x = "Glycohemoglobin",
+y = "SBP (transformed)",
+title = "Relationship btw Hb1Ac & 1/SBP")
+
+p7 +  p8
+```
+
+The first plot shows a positive relationship between my outcome and my key predictor. However, after the outcome's transformation, the relationship changes to negative. 
+
+# The Small Model
+
+The small model uses only my predictor and outcome. 
+
+```{r}
+
+model1 <- lm(1/systolic_BP ~ glycohemoglobin, data = study_b_train)
+  
+extract_eq(model1, use_coefs = TRUE, coef_digits = 4,
+           ital_vars = TRUE)
+```
+
+```{r}
+tidy_m1 <- tidy(model1, conf.int = TRUE, conf.level = 0.90)
+tidy_m1 |>
+  select(term, estimate, std.error, p.value, conf.low, conf.high) |>
+  kbl(digits = 4) |> 
+  kable_styling(font_size = 18, full_width = F)
+
+summary(model1)
+
+```
+
+The point estimate for my outcome (systolic blood pressure) is 0.00089. There is a negative association between glycohemoglobin and inverse of sbp, which means for every additional increase in glycohemoglobin the 1/sbp value decreases by 0.0001 mm Hg. However, there would have been an increase in sbp (non-transformed outcome) for every additional increase in glycohemoglobin as there's a positive relationship, as discussed before.  
+ 
+
+```{r}
+glance(model1) |>
+select(r.squared, adj.r.squared, sigma, statistic, p.value, nobs,
+logLik:deviance) |> kable(digits = 3) |> kable_styling(font_size = 18)
+```
+
+Model 1 explains only 1.5% variation in the data. 
+
+```{r, fig.height=8}
+
+par(mfrow = c(2,2)); plot(model1); par(mfrow = c(1,1))
+
+```
+
+**Residual VS Fitted** - The data points are distributed above and below x-axis and but are clustered at the lower end. The variability is not the same throughout the plot. 
+
+**Normal Q-Q Plot** - The residuals on the QQ plot looks pretty normal. Also, there are a few outliers.
+
+**Residuals VS Fitted** - No points outside the Cook's value of 0.5. We are good here.
+
+
+# The Big Model
+
+I have created a big model using all my predictors. 
+
+```{r}
+
+model2 <- lm(1/systolic_BP ~ glycohemoglobin + weight_history + ethnicity + sat_FA + smoking, data= study_b_train)
+extract_eq(model2, use_coefs = TRUE, coef_digits = 4,
+           ital_vars = TRUE, wrap = TRUE)
+
+```
+
+
+```{r}
+tidy_m2 <- tidy(model2, conf.int = TRUE, conf.level = 0.90)
+tidy_m2 |>
+  select(term, estimate, std.error, p.value, conf.low, conf.high) |>
+  kbl(digits = 4) |> 
+  kable_styling(font_size = 18, full_width = F)
+
+summary(model2)
+```
+
+- The point estimate for my outcome (systolic blood pressure) is 0.0092 mm Hg. 
+- There is a negative association between glycohemoglobin and inverse of sbp, which means for every additional increase in glycohemoglobin the 1/sbp value decreases by 0.0001 mm Hg. However, there would have been an increase in sbp (non-transformed outcome) for every additional increase in glycohemoglobin as there's a positive relationship, as discussed before.  
+- There is no change in 1/sbp in relation to saturated fatty acids consumption, asian ethnicity and hispanic ethnicity. 
+- Suppose we have two subjects, who have the same glycohemoglobin count, but one is in the overweight category and the other is in the underweight category. Our model predicts that both subjects will have the same weight and for every additional increase in the weights of these subjects the 1/Sbp decreases by 0.0001 mm Hg.
+- Again, suppose we have two subjects, who have the same glycohemoglobin count, and belong to the same weight category, but one is Mexican American and the other is Hispanic. Our model predicts that both subjects will have the different values of 1/sbp. For every additional increase in Black category and Mexican American, 1/sbp decreases by 0.0004 mm Hg and 0.0001 mm Hg, respectively. 
+
+```{r}
+glance(model2) |>
+select(r.squared, adj.r.squared, sigma, statistic, p.value, nobs,
+logLik:deviance) |> kable(digits = 3) |> kable_styling(font_size = 18)
+```
+
+Model2 explains 4.2% variation in our data. 
+
+
+```{r, fig.height=8}
+
+par(mfrow = c(2,2)); plot(model2); par(mfrow = c(1,1))
+
+```
+
+**Residual VS Fitted** - The data points are distributed above and below x-axis and but are clustered at the lower end. The variability is not the same throughout the plot. 
+
+**Normal Q-Q Plot** - The residuals on the QQ plot looks pretty normal. Also, there are a few outliers.
+
+**Residuals VS Fitted** - No points outside the Cook's value of 0.5. We are good here.
+
+
+# Comparing Models
+
+```{r}
+
+bind_rows(glance(model1), glance(model2)) |>
+  mutate(mod_vars= c("model1", "model2")) |> 
+  select(mod_vars, r2 = r.squared, adj_r2 = adj.r.squared, 
+         sigma, AIC, BIC, df, df_res = df.residual) |>
+  kable(digits = c(0, 4, 4, 5, 1, 0, 0, 0)) |> kable_minimal(font_size = 18)
+
+```
+
+- Model 2 has highest r squared value and adjusted r square value.
+- Model 2 has the smallest sigma value. (standard deviation of the residuals)
+- Model 2 has the smallest AIC value, while model 1 has smallest BIC value. 
+
+
+```{r}
+test_m1 <- augment(model1, newdata = study_b_test) |> mutate(model = "model1")
+test_m2 <- augment(model2, newdata = study_b_test) |> mutate(model = "model2")
+
+
+test_comp <- bind_rows(test_m1, test_m2) |>
+  mutate(fit_sbp = 1/(.fitted), res_sbp = systolic_BP - fit_sbp) |>
+  select(model, seqn, systolic_BP, fit_sbp, res_sbp) 
+
+test_comp |>
+  group_by(model) |>
+  summarise(MAPE = mean(abs(res_sbp)), 
+            RMSPE = sqrt(mean(res_sbp^2)),
+            max_error = max(abs(res_sbp))) |>
+  kbl(digits = c(3, 3, 3, 3)) |> kable_minimal(font_size = 18)
+```
+
+
+- Model 2 has the smallest MAPE and RSMPE values, while Model 1 has smallest max error value.
+
+
+# Discussion
+
+Judging the best model only based on r-squared value is not a good option, beacuse as we keep on adding the predictors the r-squared value increases. So, it is obvious the model with more predictors will have a higher r-squared value. Also adding an interaction term also increases the r-squared value. Taking into account AIC and BIC are equally important. However, as in our case, if one model has a small AIC value then the other model will have a small BIC value. But the best way to predict which model is the best among all is to look for smallest prediction errors. 
+
+
+## Chosen Model
+
+Overall model 2, the big model wins here (largest r-squared and smallest sigma, AIC, MAPE and RSMPE).
+
+## Answering My Question
+
+In conclusion, we can say the prediction quality of systolic blood pressure notably increases when we adjust for the other four variables (ethnicity, saturated fatty acids consumption, smoking and weight) as compared to glycohemoglobin alone. 
+
+
+## Next Steps
+
+- Transforming predictors could be an approach too. 
+- Fitting a new model with an interaction terms would definitely improve the r squared value.
+- There were a lot of missing data, so our findings cannot be generalized to the whole American population, obtaining better data could be another approach.
+
+
+# Session Information
+
+
+```{r}
+sessionInfo()
+```
+
